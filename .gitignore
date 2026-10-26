@@ -1,0 +1,14 @@
+# Game data and anything derived from it (copyrighted, never commit)
+*.nds
+*.sav
+build/
+build-*/
+dist/
+
+# Local runtime files
+*.log
+*.tmp
+controles.ini
+
+# Python
+__pycache__/
