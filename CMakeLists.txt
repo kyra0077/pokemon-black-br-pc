@@ -136,4 +136,68 @@ if (ENABLE_RECOMP)
     target_link_libraries(recomp_difftest PRIVATE recomp_arm9 core SDL2::SDL2-static)
     # 64 MB stack: recompiled call chains nest as deeply as the game's own.
     target_link_options(recomp_difftest PRIVATE -static -static-libgcc -static-libstdc++ -Wl,--stack,67108864)
+
+    # --- Hybrid mode: melonDS emulates the console, whitelisted ARM9 functions run recompiled ---
+    option(ENABLE_HYBRID "Build game_hybrid (--hybrid flag) and recomp_hybridtest" OFF)
+    if (ENABLE_HYBRID)
+        # The core needs two hooks in ARMv5 (function entry detection). The submodule is
+        # left untouched: a patched copy of ARM.cpp replaces the original in `core`.
+        set(MELON_SRC "${CMAKE_CURRENT_SOURCE_DIR}/third_party/melonDS/src")
+        set(HYBRID_DIR "${CMAKE_CURRENT_BINARY_DIR}/hybrid")
+        set(HYBRID_PATCH "${CMAKE_CURRENT_SOURCE_DIR}/tools/recomp/patch_core_hybrid.py")
+        file(MAKE_DIRECTORY "${HYBRID_DIR}")
+        execute_process(
+            COMMAND "${Python3_EXECUTABLE}" -I "${HYBRID_PATCH}" "${MELON_SRC}/ARM.cpp" "${HYBRID_DIR}/ARM.cpp"
+            COMMAND_ERROR_IS_FATAL ANY)
+        get_target_property(CORE_SOURCES core SOURCES)
+        list(TRANSFORM CORE_SOURCES REPLACE "^ARM\\.cpp$" "${HYBRID_DIR}/ARM.cpp")
+        set_property(TARGET core PROPERTY SOURCES ${CORE_SOURCES})
+        target_include_directories(core PRIVATE "${MELON_SRC}")
+
+        # Functions the differential test proved identical (difftest --passlist).
+        set(HYBRID_WHITELIST "${CMAKE_CURRENT_SOURCE_DIR}/tools/recomp/hybrid_whitelist_IRBO.txt")
+        file(STRINGS "${HYBRID_WHITELIST}" WL_LINES REGEX "^[0-9A-Fa-f]+")
+        set(WL_C "#include <stdint.h>\nconst uint32_t hybrid_whitelist[] = {\n")
+        foreach (addr IN LISTS WL_LINES)
+            string(APPEND WL_C "0x${addr}u,\n")
+        endforeach()
+        list(LENGTH WL_LINES WL_COUNT)
+        string(APPEND WL_C "0};\nconst unsigned hybrid_whitelist_size = ${WL_COUNT};\n")
+        file(WRITE "${HYBRID_DIR}/hybrid_whitelist.c" "${WL_C}")
+        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+            "${HYBRID_PATCH}" "${HYBRID_WHITELIST}" "${MELON_SRC}/ARM.cpp")
+
+        add_library(recomp_hybrid STATIC src/recomp/hybrid.cpp "${HYBRID_DIR}/hybrid_whitelist.c")
+        set_target_properties(recomp_hybrid PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
+        target_compile_definitions(recomp_hybrid PRIVATE ARCHITECTURE_x86_64=1)
+        target_include_directories(recomp_hybrid PUBLIC src/recomp)
+        target_link_libraries(recomp_hybrid PUBLIC recomp_arm9 core)
+
+        # Same game, plus the --hybrid flag. Separate .exe so the regular one stays as it is.
+        get_target_property(GAME_SOURCES game SOURCES)
+        add_executable(game_hybrid WIN32 ${GAME_SOURCES})
+        add_dependencies(game_hybrid pack_assets)
+        set_target_properties(game_hybrid PROPERTIES
+            OUTPUT_NAME "${GAME_NAME} (hybrid)"
+            CXX_STANDARD 20
+            CXX_STANDARD_REQUIRED ON
+            RUNTIME_OUTPUT_DIRECTORY "${GAME_OUTPUT_DIR}"
+            RUNTIME_OUTPUT_DIRECTORY_RELEASE "${GAME_OUTPUT_DIR}")
+        target_include_directories(game_hybrid PRIVATE "${ASSET_DIR}")
+        get_target_property(GAME_DEFS game COMPILE_DEFINITIONS)
+        target_compile_definitions(game_hybrid PRIVATE ${GAME_DEFS} HYBRID_RECOMP=1)
+        target_link_libraries(game_hybrid PRIVATE recomp_hybrid core SDL2::SDL2-static)
+        target_link_options(game_hybrid PRIVATE -static -static-libgcc -static-libstdc++ -Wl,--stack,67108864)
+
+        # Headless: boots the .nds with or without --hybrid, presses buttons on a script,
+        # saves screenshots and prints the hybrid counters.
+        add_executable(recomp_hybridtest src/recomp/hybridtest.cpp src/Platform.cpp)
+        set_target_properties(recomp_hybridtest PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
+        target_include_directories(recomp_hybridtest PRIVATE src)
+        target_compile_definitions(recomp_hybridtest PRIVATE ARCHITECTURE_x86_64=1 WIN32_LEAN_AND_MEAN NOMINMAX)
+        target_link_libraries(recomp_hybridtest PRIVATE recomp_hybrid core SDL2::SDL2-static)
+        target_link_options(recomp_hybridtest PRIVATE -static -static-libgcc -static-libstdc++ -Wl,--stack,67108864)
+    endif()
+elseif (ENABLE_HYBRID)
+    message(FATAL_ERROR "ENABLE_HYBRID needs ENABLE_RECOMP=ON")
 endif()

@@ -4,7 +4,7 @@
 //
 // Usage: recomp_difftest <rom.nds> [--frames N] [--only ADDR] [--verbose]
 //        [--overlays build/recomp/overlays.txt [--overlay-limit N] [--only-overlays]]
-//        [--unknown misses.txt] [--pu]
+//        [--unknown misses.txt] [--pu] [--passlist whitelist.txt]
 
 #include <algorithm>
 #include <csetjmp>
@@ -71,6 +71,8 @@ int gBudget = 0;
 int gCallDepth = 0;
 char* gStackBase = nullptr;
 FILE* gUnknownLog = nullptr; // --unknown <file>: targets the dispatcher couldn't resolve
+// --passlist <file>: static-module functions with no failing case (the hybrid runtime's whitelist)
+FILE* gPassList = nullptr;
 melonDS::NDS* gNds = nullptr;
 bool gTrace = false; // --trace: log every dispatcher decision
 // recomp_code_ranges indexed by 4 KB page of the canonical address (ITCM at
@@ -455,7 +457,7 @@ int main(int argc, char** argv)
     if (argc < 2)
     {
         fprintf(stderr, "usage: %s <rom.nds> [--frames N] [--only HEXADDR] [--verbose] [--overlays FILE]"
-                        " [--overlay-limit N] [--only-overlays] [--unknown FILE] [--pu]\n", argv[0]);
+                        " [--overlay-limit N] [--only-overlays] [--unknown FILE] [--pu] [--passlist FILE]\n", argv[0]);
         return 2;
     }
     int frames = 600;
@@ -472,6 +474,7 @@ int main(int argc, char** argv)
         else if (!strcmp(argv[i], "--verbose")) verbose = true;
         else if (!strcmp(argv[i], "--pu")) dumpPU = true;
         else if (!strcmp(argv[i], "--unknown") && i + 1 < argc) gUnknownLog = fopen(argv[++i], "w");
+        else if (!strcmp(argv[i], "--passlist") && i + 1 < argc) gPassList = fopen(argv[++i], "w");
         else if (!strcmp(argv[i], "--overlays") && i + 1 < argc) overlayList = argv[++i];
         else if (!strcmp(argv[i], "--overlay-limit") && i + 1 < argc) overlayLimit = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--only-overlays")) onlyOverlays = true;
@@ -672,7 +675,11 @@ int main(int argc, char** argv)
             }
         }
         if (fnFailed) funcsFail++;
-        else if (fnPassed) funcsPass++;
+        else if (fnPassed)
+        {
+            funcsPass++;
+            if (gPassList && module < 0) fprintf(gPassList, "%08X\n", e.addr);
+        }
     }
     };
 
@@ -701,5 +708,6 @@ int main(int argc, char** argv)
     printf("overlays: %d tested, %d skipped (not in main RAM); %d cases needed other overlays loaded\n",
            tested, overlaysNotRam, depRetries);
     for (auto& r : skipReasons) printf("  skipped %6d  %s\n", r.second, r.first.c_str());
+    if (gPassList) fclose(gPassList);
     return fail ? 1 : 0;
 }
