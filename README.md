@@ -1,4 +1,4 @@
-# Pokémon - Black (BR): executável nativo para PC
+# Pokémon - Black (BR): executavel nativo para PC
 
 Gera `dist/Pokemon - Black (BR).exe`, um executável Windows autônomo: a ROM vai
 embutida como recurso Win32 (`RCDATA`) e o núcleo do melonDS 1.1 (com JIT x86_64,
