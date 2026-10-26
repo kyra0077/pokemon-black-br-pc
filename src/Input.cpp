@@ -15,11 +15,13 @@ namespace
 const char* const kIniKeys[kNumActions] = {
     "A", "B", "Select", "Start", "Direita", "Esquerda", "Cima", "Baixo", "R", "L", "X", "Y",
     "TelaDeToque", "AvancoRapido", "TelaCheia", "Minitela",
+    "SalvarEstado", "CarregarEstado", "TrocarEspaco", "MenuSaves",
 };
 
 const char* const kLabels[kNumActions] = {
     "A", "B", "Select", "Start", "Direita", "Esquerda", "Cima", "Baixo", "R", "L", "X", "Y",
     "Mostrar tela de toque", "Avanço rápido (segurar)", "Tela cheia", "Mostrar/ocultar minitela",
+    "Salvar estado rápido", "Carregar estado rápido", "Trocar espaço do estado", "Menu de saves",
 };
 
 const char* const kMinimapIniKey = "MinitelaVisivel";
@@ -109,6 +111,10 @@ void InputConfig::SetDefaults()
     set(Action::FastForward, {K(SDL_SCANCODE_SPACE)});
     set(Action::Fullscreen, {K(SDL_SCANCODE_F11)});
     set(Action::Minimap, {K(SDL_SCANCODE_M)});
+    set(Action::SaveState, {K(SDL_SCANCODE_F5)});
+    set(Action::LoadState, {K(SDL_SCANCODE_F8)});
+    set(Action::NextSlot, {K(SDL_SCANCODE_F6)});
+    set(Action::SavesMenu, {K(SDL_SCANCODE_F2)});
 }
 
 bool InputConfig::Load(const std::string& path)

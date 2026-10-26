@@ -11,6 +11,7 @@ const Action kRowOrder[kNumActions] = {
     Action::A, Action::B, Action::X, Action::Y, Action::L, Action::R, Action::Start, Action::Select,
     Action::Up, Action::Down, Action::Left, Action::Right,
     Action::Overlay, Action::FastForward, Action::Fullscreen, Action::Minimap,
+    Action::SaveState, Action::LoadState, Action::NextSlot, Action::SavesMenu,
 };
 
 constexpr int kAxisCapture = 20000;
@@ -234,7 +235,8 @@ void ControlsMenu::Render(SDL_Renderer* r, TextRenderer& text)
     SDL_RenderFillRect(r, &all);
 
     // Layout scales with the window height.
-    int rowH = std::max(18, h / 26);
+    // All rows plus title, spacing and footer must fit the window height.
+    int rowH = std::max(14, std::min(h / 26, h / (kNumRows + 6)));
     int textH = rowH * 58 / 100;
     int titleH = rowH * 95 / 100;
     int panelW = std::min(w - 2 * rowH / 2, rowH * 30);

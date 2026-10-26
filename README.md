@@ -39,6 +39,24 @@ Padrões (todos remapeáveis, veja abaixo):
 | Tela cheia / janela | F11 (Alt+Enter sempre funciona) | — |
 | Configurar controles | **F1** | botão Guide/Home |
 | Mostrar/ocultar a minitela | M | — |
+| Menu de saves (estados e backups) | **F2** | — |
+| Salvar / carregar estado rápido | F5 / F8 | — |
+| Trocar o espaço do estado rápido | F6 | — |
+
+### Saves, estados e backups
+
+- **Backups automáticos:** toda vez que o jogo grava, a versão anterior do `.sav` vai para
+  `saves\backups\` (com a data em que ela foi gravada). Ficam as 30 mais recentes.
+- **Estados (save states):** F5 salva e F8 carrega o momento exato do jogo no espaço rápido
+  (F6 troca entre os 6 espaços). Antes de cada carregamento, o momento atual vai para o espaço
+  **Desfazer**, caso você carregue o estado errado. Atenção: carregar um estado também volta o
+  save do jogo para aquele momento (os backups cobrem isso).
+- **Menu Saves (F2):** aba *Estados salvos* com miniatura e data de cada espaço (salvar, carregar,
+  apagar) e aba *Backups do save* para restaurar uma versão antiga do save (o jogo reinicia e o
+  save atual também vira backup). **Abrir pasta** abre `saves\` no Explorador de Arquivos.
+  Teclado: setas, Enter, S, Del, Tab (aba), O, Esc. Controle: D-pad, Ⓐ, Ⓧ, Ⓨ, LB/RB, Ⓑ.
+
+Cada estado ocupa cerca de 20 MB.
 
 ### Minitela
 

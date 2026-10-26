@@ -32,6 +32,9 @@
 #include "App.h"
 #include "ControlsMenu.h"
 #include "Input.h"
+#include "SavesMenu.h"
+#include "SaveStore.h"
+#include "Savestate.h"
 #include "TextRenderer.h"
 #include "rom_info.h"
 #ifdef HYBRID_RECOMP
@@ -138,7 +141,7 @@ struct SharpScreen
 
 } // namespace
 
-struct App::Impl
+struct App::Impl : public SavesHost
 {
     App* owner = nullptr;
     SDL_Window* window = nullptr;
@@ -188,6 +191,14 @@ struct App::Impl
     std::vector<u8> saveData;
     bool saveDirty = false;
     Uint64 saveLastWrite = 0;
+
+    // Save states, .sav backups and the F2 menu that manages them.
+    std::unique_ptr<SaveStore> store;
+    std::unique_ptr<SavesMenu> savesMenu;
+    int quickSlot = 1;
+    bool saveStateHeldPrev = false, loadStateHeldPrev = false, nextSlotHeldPrev = false, savesMenuHeldPrev = false;
+    std::string toast;
+    Uint64 toastUntil = 0;
 
     // --hybrid: whitelisted ARM9 functions run as statically recompiled code.
     bool hybrid = false, hybridAll = false;
@@ -248,7 +259,7 @@ struct App::Impl
 
     void LoadSave()
     {
-        savePath = App::ExeDirectory() + GAME_DISPLAY_NAME ".sav";
+        savePath = store->SavPath();
         FILE* f = _wfopen(Widen(savePath).c_str(), L"rb");
         if (!f) return;
         _fseeki64(f, 0, SEEK_END);
@@ -272,8 +283,110 @@ struct App::Impl
         bool ok = fwrite(saveData.data(), 1, saveData.size(), f) == saveData.size();
         ok &= fflush(f) == 0;
         fclose(f);
-        if (ok && MoveFileExW(tmp.c_str(), final.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+        if (!ok) return;
+        store->BackupSav(); // the version about to be replaced goes to saves\backups
+        if (MoveFileExW(tmp.c_str(), final.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
             saveDirty = false;
+    }
+
+    void Toast(const std::string& msg, Uint64 ms = 2500)
+    {
+        toast = msg;
+        toastUntil = SDL_GetTicks64() + ms;
+    }
+
+    const u32* TopScreen() const { return nds->GPU.Framebuffer[nds->GPU.FrontBuffer][0].get(); }
+
+    // SavesHost: also used by the quick save/load keys.
+    bool SaveStateTo(int slot) override
+    {
+        Savestate state;
+        if (state.Error || !nds->DoSavestate(&state) || state.Error)
+        {
+            Toast("Não foi possível salvar o estado.");
+            return false;
+        }
+        if (!store->WriteState(slot, state.Buffer(), state.Length(), TopScreen()))
+        {
+            Toast("Não foi possível gravar o arquivo do estado.");
+            return false;
+        }
+        Toast("Estado salvo no espaço " + std::to_string(slot) + ".");
+        return true;
+    }
+
+    bool LoadStateFrom(int slot) override
+    {
+        std::vector<u8> data;
+        if (!store->ReadState(slot, data))
+        {
+            Toast("O espaço " + std::to_string(slot) + " está vazio ou o arquivo não é deste jogo.");
+            return false;
+        }
+
+        // Keep the current moment: in memory to recover from a bad file, and on
+        // disk as the "undo" slot in case the player loaded the wrong state.
+        Savestate current;
+        if (current.Error || !nds->DoSavestate(&current) || current.Error)
+        {
+            Toast("Não foi possível guardar o momento atual; nada foi carregado.");
+            return false;
+        }
+        if (slot != SaveStore::kUndoSlot)
+            store->WriteState(SaveStore::kUndoSlot, current.Buffer(), current.Length(), TopScreen());
+
+        Savestate state(data.data(), (u32)data.size(), false);
+        if (state.Error || !nds->DoSavestate(&state) || state.Error)
+        {
+            current.Rewind(false);
+            nds->DoSavestate(&current);
+            Toast("Esse estado não pôde ser carregado; o jogo continua de onde estava.");
+            return false;
+        }
+        mouseTouch = padTouch = false;
+        nds->ReleaseScreen();
+        Toast(slot == SaveStore::kUndoSlot ? std::string("Voltou para antes do último carregamento.")
+                                           : "Estado do espaço " + std::to_string(slot) + " carregado.");
+        return true;
+    }
+
+    bool RestoreBackup(const std::string& path) override
+    {
+        NDSCart::CartCommon* cart = nds->GetNDSCart();
+        std::vector<u8> data;
+        FILE* f = _wfopen(Widen(path).c_str(), L"rb");
+        if (!f || !cart) { if (f) fclose(f); return false; }
+        _fseeki64(f, 0, SEEK_END);
+        s64 len = _ftelli64(f);
+        _fseeki64(f, 0, SEEK_SET);
+        if (len > 0) data.resize((size_t)len);
+        bool ok = len > 0 && fread(data.data(), 1, data.size(), f) == data.size();
+        fclose(f);
+        if (!ok || data.size() != cart->GetSaveMemoryLength()) return false;
+
+        FlushSave();                                   // write any pending in-game save first
+        cart->SetSaveMemory(data.data(), (u32)data.size()); // marks it dirty through OnSaveWrite
+        FlushSave();                                   // current .sav -> backups, restored copy -> .sav
+        RestartConsole();
+        Toast("Save restaurado; o jogo foi reiniciado.", 4000);
+        return true;
+    }
+
+    // Boots the cart that is already inserted (startup and after restoring a save).
+    void RestartConsole()
+    {
+        nds->Reset();
+        // Built-in FreeBIOS has no boot menu, so always boot the cart directly.
+        nds->SetupDirectBoot(GAME_DISPLAY_NAME ".nds");
+
+        time_t now = time(nullptr);
+        tm local{};
+        localtime_s(&local, &now);
+        nds->RTC.SetDateTime(local.tm_year + 1900, local.tm_mon + 1, local.tm_mday,
+                             local.tm_hour, local.tm_min, local.tm_sec);
+
+        nds->Start();
+        mouseTouch = padTouch = false;
     }
 
     bool BootConsole()
@@ -319,17 +432,7 @@ struct App::Impl
             return false;
         }
         nds->SetNDSCart(std::move(cart));
-        nds->Reset();
-        // Built-in FreeBIOS has no boot menu, so always boot the cart directly.
-        nds->SetupDirectBoot(GAME_DISPLAY_NAME ".nds");
-
-        time_t now = time(nullptr);
-        tm local{};
-        localtime_s(&local, &now);
-        nds->RTC.SetDateTime(local.tm_year + 1900, local.tm_mon + 1, local.tm_mday,
-                             local.tm_hour, local.tm_min, local.tm_sec);
-
-        nds->Start();
+        RestartConsole();
 #ifdef HYBRID_RECOMP
         if (hybrid) Hybrid::Enable(*nds, hybridAll);
 #endif
@@ -494,15 +597,33 @@ struct App::Impl
         if (audioDev) SDL_PauseAudioDevice(audioDev, 1);
     }
 
+    void OpenSavesMenu()
+    {
+        FlushSave(); // so the backups list includes the latest in-game save
+        savesMenu->Open(quickSlot);
+        mouseTouch = padTouch = false;
+        hintUntil = 0;
+        UpdateCursor();
+        if (audioDev) SDL_PauseAudioDevice(audioDev, 1);
+    }
+
+    bool AnyMenuOpen() const { return menu->IsOpen() || savesMenu->IsOpen(); }
+
     void OnMenuClosed()
     {
         suppressHeldInput = true; // e.g. the Enter that closed the menu is also DS Start
+        quickSlot = savesMenu->QuickSlot();
         UpdateCursor();
         if (audioDev) SDL_PauseAudioDevice(audioDev, 0);
     }
 
     void HandleEvent(const SDL_Event& e)
     {
+        if (savesMenu->HandleEvent(e, window, renderer))
+        {
+            if (!savesMenu->IsOpen()) OnMenuClosed();
+            return;
+        }
         if (menu->HandleEvent(e, window, renderer))
         {
             if (!menu->IsOpen()) OnMenuClosed();
@@ -597,7 +718,11 @@ struct App::Impl
         bool overlayHeld = input.Held(Action::Overlay, kb, pad);
         bool fullscreenHeld = input.Held(Action::Fullscreen, kb, pad);
         bool minimapHeld = input.Held(Action::Minimap, kb, pad);
-        if (!menu->IsOpen())
+        bool saveHeld = input.Held(Action::SaveState, kb, pad);
+        bool loadHeld = input.Held(Action::LoadState, kb, pad);
+        bool slotHeld = input.Held(Action::NextSlot, kb, pad);
+        bool savesHeld = input.Held(Action::SavesMenu, kb, pad);
+        if (!AnyMenuOpen())
         {
             if (overlayHeld && !overlayHeldPrev) SetOverlay(!overlayOpen);
             if (fullscreenHeld && !fullscreenHeldPrev) ToggleFullscreen();
@@ -606,16 +731,30 @@ struct App::Impl
                 input.showMinimap = !input.showMinimap;
                 input.Save(iniPath);
             }
+            if (saveHeld && !saveStateHeldPrev) SaveStateTo(quickSlot);
+            if (loadHeld && !loadStateHeldPrev) LoadStateFrom(quickSlot);
+            if (slotHeld && !nextSlotHeldPrev)
+            {
+                quickSlot = quickSlot % SaveStore::kSlots + 1;
+                SaveStore::Slot s = store->GetSlot(quickSlot);
+                Toast("Espaço rápido: " + std::to_string(quickSlot) +
+                      (s.exists ? " (" + SaveStore::FormatTime(s.when) + ")" : " (vazio)"));
+            }
+            if (savesHeld && !savesMenuHeldPrev) OpenSavesMenu();
         }
         overlayHeldPrev = overlayHeld;
         fullscreenHeldPrev = fullscreenHeld;
         minimapHeldPrev = minimapHeld;
+        saveStateHeldPrev = saveHeld;
+        loadStateHeldPrev = loadHeld;
+        nextSlotHeldPrev = slotHeld;
+        savesMenuHeldPrev = savesHeld;
     }
 
     // The cursor shows while it's useful (overlay, menu) or right after the mouse moved.
     void UpdateCursor()
     {
-        bool want = overlayOpen || menu->IsOpen() || SDL_GetTicks64() - lastMouseMove < 2000;
+        bool want = overlayOpen || AnyMenuOpen() || SDL_GetTicks64() - lastMouseMove < 2000;
         if ((SDL_ShowCursor(SDL_QUERY) == SDL_ENABLE) != want)
             SDL_ShowCursor(want ? SDL_ENABLE : SDL_DISABLE);
         if (!want) miniHover = false;
@@ -812,18 +951,33 @@ struct App::Impl
         {
             menu->Render(renderer, *text);
         }
-        else if (SDL_GetTicks64() < hintUntil)
+        else if (savesMenu->IsOpen())
+        {
+            savesMenu->Render(renderer, *text);
+        }
+        else
         {
             int w, h;
             SDL_GetRendererOutputSize(renderer, &w, &h);
             int th = std::max(14, h / 40);
-            const char* hint = "F1: configurar controles";
-            int tw = text->Measure(hint, th);
-            SDL_Rect box{th / 2, h - th * 2 - th / 2, tw + th, th * 2};
             SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
-            SDL_SetRenderDrawColor(renderer, 0, 0, 0, 170);
-            SDL_RenderFillRect(renderer, &box);
-            text->Draw(hint, box.x + th / 2, box.y + th / 2 - th / 8, th, SDL_Color{235, 235, 240, 255});
+            if (SDL_GetTicks64() < hintUntil)
+            {
+                const char* hint = "F1: controles  ·  F2: saves e estados";
+                int tw = text->Measure(hint, th);
+                SDL_Rect box{th / 2, h - th * 2 - th / 2, tw + th, th * 2};
+                SDL_SetRenderDrawColor(renderer, 0, 0, 0, 170);
+                SDL_RenderFillRect(renderer, &box);
+                text->Draw(hint, box.x + th / 2, box.y + th / 2 - th / 8, th, SDL_Color{235, 235, 240, 255});
+            }
+            if (SDL_GetTicks64() < toastUntil)
+            {
+                int tw = text->Measure(toast, th);
+                SDL_Rect box{(w - tw - th * 2) / 2, h - th * 4, tw + th * 2, th * 2};
+                SDL_SetRenderDrawColor(renderer, 20, 30, 45, 220);
+                SDL_RenderFillRect(renderer, &box);
+                text->Draw(toast, w / 2, box.y + th / 2 - th / 8, th, SDL_Color{150, 215, 255, 255}, 1);
+            }
         }
         SDL_RenderPresent(renderer);
     }
@@ -873,6 +1027,8 @@ struct App::Impl
         }
         menu = std::make_unique<ControlsMenu>(input, iniPath);
         text = std::make_unique<TextRenderer>(renderer);
+        store = std::make_unique<SaveStore>(App::ExeDirectory(), GAME_DISPLAY_NAME, ROM_EMBEDDED_CRC32);
+        savesMenu = std::make_unique<SavesMenu>(*store, *this);
         hintUntil = SDL_GetTicks64() + kHintDurationMs;
 
         // Paint one black frame so the window doesn't flash white while booting.
@@ -910,7 +1066,7 @@ struct App::Impl
             PollHotkeys();
             UpdateCursor();
 
-            if (menu->IsOpen())
+            if (AnyMenuOpen())
             {
                 // Paused: keep redrawing the last frame under the menu.
                 Render();
@@ -965,6 +1121,7 @@ struct App::Impl
         if (menu->IsOpen()) menu->Close(); // keeps edits made right before quitting
         if (nds) nds->Stop();
         nds.reset();
+        savesMenu.reset(); // owns thumbnail textures; must go before the renderer
         text.reset();
         top.Destroy();
         bottom.Destroy();

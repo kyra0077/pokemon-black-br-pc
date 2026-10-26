@@ -11,6 +11,7 @@ enum class Action
 {
     A, B, Select, Start, Right, Left, Up, Down, R, L, X, Y,
     Overlay, FastForward, Fullscreen, Minimap,
+    SaveState, LoadState, NextSlot, SavesMenu,
     Count
 };
 

@@ -67,6 +67,10 @@ add_executable(game WIN32
     src/ControlsMenu.h
     src/TextRenderer.cpp
     src/TextRenderer.h
+    src/SaveStore.cpp
+    src/SaveStore.h
+    src/SavesMenu.cpp
+    src/SavesMenu.h
     "${ASSET_DIR}/game.rc")
 add_dependencies(game pack_assets)
 
