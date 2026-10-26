@@ -10,7 +10,7 @@ namespace
 const Action kRowOrder[kNumActions] = {
     Action::A, Action::B, Action::X, Action::Y, Action::L, Action::R, Action::Start, Action::Select,
     Action::Up, Action::Down, Action::Left, Action::Right,
-    Action::Overlay, Action::FastForward, Action::Fullscreen,
+    Action::Overlay, Action::FastForward, Action::Fullscreen, Action::Minimap,
 };
 
 constexpr int kAxisCapture = 20000;

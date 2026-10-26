@@ -96,7 +96,16 @@ struct SharpScreen
         if (pixels) SDL_UpdateTexture(source, nullptr, pixels, kScreenW * 4);
     }
 
-    void Draw(SDL_Renderer* r, const SDL_FRect& dst)
+    void Draw(SDL_Renderer* r, const SDL_FRect& dst, Uint8 alpha = 255)
+    {
+        SDL_Texture* out = Prepare(r, dst);
+        SDL_SetTextureBlendMode(out, alpha < 255 ? SDL_BLENDMODE_BLEND : SDL_BLENDMODE_NONE);
+        SDL_SetTextureAlphaMod(out, alpha);
+        SDL_RenderCopyF(r, out, nullptr, &dst);
+    }
+
+    // Returns the texture to draw at dst (the integer-scaled copy when available).
+    SDL_Texture* Prepare(SDL_Renderer* r, const SDL_FRect& dst)
     {
         int want = std::clamp((int)std::ceil(std::max(dst.w / kScreenW, dst.h / kScreenH)), 1, 8);
         if (want != factor || !scaled)
@@ -107,16 +116,12 @@ struct SharpScreen
             factor = want;
             if (scaled) SDL_SetTextureScaleMode(scaled, SDL_ScaleModeLinear);
         }
-        if (!scaled)
-        {
-            SDL_RenderCopyF(r, source, nullptr, &dst);
-            return;
-        }
+        if (!scaled) return source;
         SDL_Texture* prev = SDL_GetRenderTarget(r);
         SDL_SetRenderTarget(r, scaled);
         SDL_RenderCopy(r, source, nullptr, nullptr);
         SDL_SetRenderTarget(r, prev);
-        SDL_RenderCopyF(r, scaled, nullptr, &dst);
+        return scaled;
     }
 
     void Destroy()
@@ -135,6 +140,17 @@ struct App::Impl
     SDL_Window* window = nullptr;
     SDL_Renderer* renderer = nullptr;
     SharpScreen top, bottom;
+    SharpScreen mini; // separate copy: its scale differs from the overlay's
+
+    // Minitela: live preview of the bottom screen while the overlay is closed.
+    SDL_FRect miniRect{};
+    float miniAnim = 0.0f;
+    bool miniHover = false;
+    bool minimapHeldPrev = false;
+    Uint64 miniPulseUntil = 0;
+    std::vector<u32> miniSamples;
+    Uint64 lastMouseMove = 0;
+    std::string iniPath;
     SDL_GameController* pad = nullptr;
 
     SDL_AudioDeviceID audioDev = 0;
@@ -335,7 +351,8 @@ struct App::Impl
             cursorX = kScreenW / 2.0f;
             cursorY = kScreenH / 2.0f;
         }
-        SDL_ShowCursor(open ? SDL_ENABLE : SDL_DISABLE);
+        miniHover = false;
+        UpdateCursor();
     }
 
     bool OverlayInteractive() const { return overlayOpen && overlayAnim > 0.98f; }
@@ -356,17 +373,51 @@ struct App::Impl
         float shownY = gameRect.y + (gameRect.h - overlayRect.h) * 0.5f;
         float hiddenY = (float)h + 8.0f;
         overlayRect.y = std::round(hiddenY + (shownY - hiddenY) * EaseOut(overlayAnim));
+
+        // The minitela sits in the side bar when the window is wider than 4:3
+        // (typical 16:9 fullscreen), so it doesn't cover the game; otherwise in
+        // the game's top-right corner, clear of the dialogue box and HP bars.
+        float margin = std::max(8.0f, std::round(h * 0.015f));
+        float bar = gameRect.x;
+        if (bar >= 150.0f)
+        {
+            miniRect.w = std::min(bar - margin * 2, std::round(h * 0.32f * kScreenW / kScreenH));
+            miniRect.h = std::round(miniRect.w * kScreenH / kScreenW);
+            miniRect.x = std::round(gameRect.x + gameRect.w + (bar - miniRect.w) * 0.5f);
+            miniRect.y = std::round(gameRect.y + margin * 3);
+        }
+        else
+        {
+            miniRect.h = std::round(gameRect.h * 0.18f);
+            miniRect.w = std::round(miniRect.h * kScreenW / kScreenH);
+            miniRect.x = std::round(gameRect.x + gameRect.w - miniRect.w - margin);
+            miniRect.y = std::round(gameRect.y + margin * 2.5f);
+        }
+    }
+
+    // Window coordinates (mouse events) -> renderer pixels (layout).
+    void ToRenderer(int wx, int wy, float& px, float& py)
+    {
+        int ww, wh, rw, rh;
+        SDL_GetWindowSize(window, &ww, &wh);
+        SDL_GetRendererOutputSize(renderer, &rw, &rh);
+        px = wx * (rw / (float)std::max(ww, 1));
+        py = wy * (rh / (float)std::max(wh, 1));
+    }
+
+    bool OverMinimap(int wx, int wy)
+    {
+        if (miniAnim < 0.5f) return false;
+        float px, py;
+        ToRenderer(wx, wy, px, py);
+        return px >= miniRect.x && py >= miniRect.y && px < miniRect.x + miniRect.w && py < miniRect.y + miniRect.h;
     }
 
     // Window pixel -> DS touch coordinate; false when outside the overlay.
     bool MapToTouch(int wx, int wy, bool clamp, int& tx, int& ty)
     {
-        // Mouse events are in window coordinates; the layout is in renderer pixels.
-        int ww, wh, rw, rh;
-        SDL_GetWindowSize(window, &ww, &wh);
-        SDL_GetRendererOutputSize(renderer, &rw, &rh);
-        float px = wx * (rw / (float)std::max(ww, 1));
-        float py = wy * (rh / (float)std::max(wh, 1));
+        float px, py;
+        ToRenderer(wx, wy, px, py);
         float fx = (px - overlayRect.x) * kScreenW / overlayRect.w;
         float fy = (py - overlayRect.y) * kScreenH / overlayRect.h;
         bool inside = fx >= 0 && fy >= 0 && fx < kScreenW && fy < kScreenH;
@@ -387,14 +438,14 @@ struct App::Impl
         menu->Open();
         mouseTouch = padTouch = false;
         hintUntil = 0;
-        SDL_ShowCursor(SDL_ENABLE);
+        UpdateCursor();
         if (audioDev) SDL_PauseAudioDevice(audioDev, 1);
     }
 
     void OnMenuClosed()
     {
         suppressHeldInput = true; // e.g. the Enter that closed the menu is also DS Start
-        SDL_ShowCursor(overlayOpen ? SDL_ENABLE : SDL_DISABLE);
+        UpdateCursor();
         if (audioDev) SDL_PauseAudioDevice(audioDev, 0);
     }
 
@@ -427,6 +478,7 @@ struct App::Impl
         case SDL_MOUSEBUTTONDOWN:
             if (e.button.button != SDL_BUTTON_LEFT || e.button.which == SDL_TOUCH_MOUSEID) break;
             showPadCursor = false;
+            lastMouseMove = SDL_GetTicks64();
             if (OverlayInteractive())
             {
                 if (MapToTouch(e.button.x, e.button.y, false, touchX, touchY))
@@ -434,9 +486,15 @@ struct App::Impl
                 else
                     SetOverlay(false); // click outside the panel retracts it
             }
+            else if (!overlayOpen && OverMinimap(e.button.x, e.button.y))
+            {
+                SetOverlay(true);
+            }
             break;
 
         case SDL_MOUSEMOTION:
+            lastMouseMove = SDL_GetTicks64();
+            miniHover = !overlayOpen && OverMinimap(e.motion.x, e.motion.y);
             if (mouseTouch) MapToTouch(e.motion.x, e.motion.y, true, touchX, touchY);
             if (overlayOpen && !padTouch) showPadCursor = false;
             break;
@@ -486,13 +544,92 @@ struct App::Impl
         const Uint8* kb = SDL_GetKeyboardState(nullptr);
         bool overlayHeld = input.Held(Action::Overlay, kb, pad);
         bool fullscreenHeld = input.Held(Action::Fullscreen, kb, pad);
+        bool minimapHeld = input.Held(Action::Minimap, kb, pad);
         if (!menu->IsOpen())
         {
             if (overlayHeld && !overlayHeldPrev) SetOverlay(!overlayOpen);
             if (fullscreenHeld && !fullscreenHeldPrev) ToggleFullscreen();
+            if (minimapHeld && !minimapHeldPrev)
+            {
+                input.showMinimap = !input.showMinimap;
+                input.Save(iniPath);
+            }
         }
         overlayHeldPrev = overlayHeld;
         fullscreenHeldPrev = fullscreenHeld;
+        minimapHeldPrev = minimapHeld;
+    }
+
+    // The cursor shows while it's useful (overlay, menu) or right after the mouse moved.
+    void UpdateCursor()
+    {
+        bool want = overlayOpen || menu->IsOpen() || SDL_GetTicks64() - lastMouseMove < 2000;
+        if ((SDL_ShowCursor(SDL_QUERY) == SDL_ENABLE) != want)
+            SDL_ShowCursor(want ? SDL_ENABLE : SDL_DISABLE);
+        if (!want) miniHover = false;
+    }
+
+    // Flags a big change on the bottom screen (a new menu, a prompt...) so the
+    // minitela can draw attention to it. Compares a sparse grid of pixels.
+    void WatchBottomScreen(const u32* fb)
+    {
+        if (!fb) return;
+        constexpr int kStep = 4;
+        size_t n = (kScreenW / kStep) * (kScreenH / kStep);
+        bool first = miniSamples.size() != n;
+        if (first) miniSamples.assign(n, 0);
+        size_t changed = 0, i = 0;
+        for (int y = 0; y < kScreenH; y += kStep)
+            for (int x = 0; x < kScreenW; x += kStep, i++)
+            {
+                u32 v = fb[y * kScreenW + x] & 0xFFFFFF;
+                if (v != miniSamples[i]) changed++;
+                miniSamples[i] = v;
+            }
+        if (!first && !overlayOpen && changed * 100 > n * 35)
+            miniPulseUntil = SDL_GetTicks64() + 2500;
+    }
+
+    void DrawMinimap()
+    {
+        float a = EaseOut(miniAnim);
+        Uint8 alpha = (Uint8)(a * (miniHover ? 255 : 225));
+        SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+
+        float border = std::max(2.0f, std::round(miniRect.h / 55.0f));
+        SDL_FRect shadow{miniRect.x - border + 3, miniRect.y - border + 4, miniRect.w + border * 2, miniRect.h + border * 2};
+        SDL_SetRenderDrawColor(renderer, 0, 0, 0, (Uint8)(110 * a));
+        SDL_RenderFillRectF(renderer, &shadow);
+
+        // Border: grey, white on hover, pulsing blue after a big change.
+        float r = 190, g = 192, b = 200;
+        Uint64 now = SDL_GetTicks64();
+        if (now < miniPulseUntil)
+        {
+            float t = 0.5f + 0.5f * std::sin(now * 0.012f);
+            r += (110 - r) * t; g += (205 - g) * t; b += (255 - b) * t;
+        }
+        if (miniHover) r = g = b = 255;
+        SDL_FRect frame{miniRect.x - border, miniRect.y - border, miniRect.w + border * 2, miniRect.h + border * 2};
+        SDL_SetRenderDrawColor(renderer, (Uint8)r, (Uint8)g, (Uint8)b, (Uint8)(alpha));
+        SDL_RenderFillRectF(renderer, &frame);
+        mini.Draw(renderer, miniRect, alpha);
+
+        // Label with the first key that opens the panel.
+        const auto& binds = input.binds[(int)Action::Overlay];
+        std::string key;
+        for (const Binding& bnd : binds)
+            if (!bnd.IsPad()) { key = BindingName(bnd); break; }
+        if (key.empty() && !binds.empty()) key = BindingName(binds[0]);
+        std::string label = key.empty() ? "Tela de toque" : key + ": tela de toque";
+        int th = std::max(12, (int)(miniRect.h / 8.5f));
+        int tw = text->Measure(label, th);
+        SDL_Rect pill{(int)(miniRect.x + miniRect.w - tw - th * 0.8f), (int)(miniRect.y - border - th * 1.5f),
+                      tw + (int)(th * 0.8f), (int)(th * 1.35f)};
+        pill.x = std::max(pill.x, (int)miniRect.x - (int)border);
+        SDL_SetRenderDrawColor(renderer, 0, 0, 0, (Uint8)(170 * a));
+        SDL_RenderFillRect(renderer, &pill);
+        text->Draw(label, pill.x + (int)(th * 0.4f), pill.y + th / 10, th, SDL_Color{235, 235, 240, alpha});
     }
 
     u32 PollInput(float dt)
@@ -562,12 +699,16 @@ struct App::Impl
     void Render()
     {
         int fb = nds->GPU.FrontBuffer;
+        const u32* bottomFb = nds->GPU.Framebuffer[fb][1].get();
         top.Upload(nds->GPU.Framebuffer[fb][0].get());
-        if (overlayAnim > 0.0f) bottom.Upload(nds->GPU.Framebuffer[fb][1].get());
+        if (overlayAnim > 0.0f) bottom.Upload(bottomFb);
+        if (miniAnim > 0.0f) mini.Upload(bottomFb);
+        WatchBottomScreen(bottomFb);
 
         SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
         SDL_RenderClear(renderer);
         top.Draw(renderer, gameRect);
+        if (miniAnim > 0.0f) DrawMinimap();
 
         if (overlayAnim > 0.0f)
         {
@@ -644,10 +785,14 @@ struct App::Impl
 
         renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_TARGETTEXTURE);
         if (!renderer) renderer = SDL_CreateRenderer(window, -1, 0);
-        if (!renderer || !top.Init(renderer) || !bottom.Init(renderer)) { Fatal(SDL_GetError()); return 1; }
+        if (!renderer || !top.Init(renderer) || !bottom.Init(renderer) || !mini.Init(renderer))
+        {
+            Fatal(SDL_GetError());
+            return 1;
+        }
         SDL_ShowCursor(SDL_DISABLE);
 
-        std::string iniPath = App::ExeDirectory() + "controles.ini";
+        iniPath = App::ExeDirectory() + "controles.ini";
         if (!input.Load(iniPath))
         {
             input.SetDefaults();
@@ -686,8 +831,11 @@ struct App::Impl
 
             float step = dt / kOverlaySlideSec;
             overlayAnim = std::clamp(overlayAnim + (overlayOpen ? step : -step), 0.0f, 1.0f);
+            bool miniShown = input.showMinimap && !overlayOpen;
+            miniAnim = std::clamp(miniAnim + (miniShown ? step : -step), 0.0f, 1.0f);
             UpdateLayout();
             PollHotkeys();
+            UpdateCursor();
 
             if (menu->IsOpen())
             {
@@ -741,6 +889,7 @@ struct App::Impl
         text.reset();
         top.Destroy();
         bottom.Destroy();
+        mini.Destroy();
         if (pad) SDL_GameControllerClose(pad);
         SDL_DestroyRenderer(renderer);
         SDL_DestroyWindow(window);

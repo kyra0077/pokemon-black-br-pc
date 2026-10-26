@@ -10,7 +10,7 @@
 enum class Action
 {
     A, B, Select, Start, Right, Left, Up, Down, R, L, X, Y,
-    Overlay, FastForward, Fullscreen,
+    Overlay, FastForward, Fullscreen, Minimap,
     Count
 };
 
@@ -35,6 +35,7 @@ class InputConfig
 {
 public:
     std::vector<Binding> binds[kNumActions];
+    bool showMinimap = true; // preview of the bottom screen while the overlay is closed
 
     void SetDefaults();
     bool Load(const std::string& path);

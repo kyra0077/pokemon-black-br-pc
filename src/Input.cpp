@@ -14,13 +14,15 @@ namespace
 
 const char* const kIniKeys[kNumActions] = {
     "A", "B", "Select", "Start", "Direita", "Esquerda", "Cima", "Baixo", "R", "L", "X", "Y",
-    "TelaDeToque", "AvancoRapido", "TelaCheia",
+    "TelaDeToque", "AvancoRapido", "TelaCheia", "Minitela",
 };
 
 const char* const kLabels[kNumActions] = {
     "A", "B", "Select", "Start", "Direita", "Esquerda", "Cima", "Baixo", "R", "L", "X", "Y",
-    "Mostrar tela de toque", "Avanço rápido (segurar)", "Tela cheia",
+    "Mostrar tela de toque", "Avanço rápido (segurar)", "Tela cheia", "Mostrar/ocultar minitela",
 };
+
+const char* const kMinimapIniKey = "MinitelaVisivel";
 
 Binding K(SDL_Scancode s) { return {Binding::Key, s, 0}; }
 Binding P(SDL_GameControllerButton b) { return {Binding::Button, b, 0}; }
@@ -106,6 +108,7 @@ void InputConfig::SetDefaults()
                           X(SDL_CONTROLLER_AXIS_TRIGGERLEFT, 1), X(SDL_CONTROLLER_AXIS_TRIGGERRIGHT, 1)});
     set(Action::FastForward, {K(SDL_SCANCODE_SPACE)});
     set(Action::Fullscreen, {K(SDL_SCANCODE_F11)});
+    set(Action::Minimap, {K(SDL_SCANCODE_M)});
 }
 
 bool InputConfig::Load(const std::string& path)
@@ -124,6 +127,12 @@ bool InputConfig::Load(const std::string& path)
         if (eq == std::string::npos) continue;
         std::string key = Trim(s.substr(0, eq));
         std::string value = s.substr(eq + 1);
+
+        if (_stricmp(key.c_str(), kMinimapIniKey) == 0)
+        {
+            showMinimap = Trim(value) != "0";
+            continue;
+        }
 
         for (int a = 0; a < kNumActions; a++)
         {
@@ -163,6 +172,8 @@ bool InputConfig::Save(const std::string& path) const
             line += (i ? ", " : "") + Serialize(binds[a][i]);
         fprintf(f, "%s\n", line.c_str());
     }
+    fputs("\n[Opcoes]\n", f);
+    fprintf(f, "%s = %d\n", kMinimapIniKey, showMinimap ? 1 : 0);
     bool ok = fflush(f) == 0;
     fclose(f);
     return ok && MoveFileExW(tmp.c_str(), final.c_str(), MOVEFILE_REPLACE_EXISTING);

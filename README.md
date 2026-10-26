@@ -38,6 +38,14 @@ Padrões (todos remapeáveis, veja abaixo):
 | Avanço rápido | segurar Espaço | — |
 | Tela cheia / janela | F11 (Alt+Enter sempre funciona) | — |
 | Configurar controles | **F1** | botão Guide/Home |
+| Mostrar/ocultar a minitela | M | — |
+
+### Minitela
+
+Com o painel fechado, uma prévia ao vivo da tela de baixo fica num canto: na faixa preta
+lateral em telas largas (16:9) ou no canto superior direito do jogo. A borda pisca quando a
+tela de baixo muda bastante (um menu novo, uma pergunta…), e clicar nela abre o painel de
+toque. **M** liga/desliga a minitela; a escolha fica salva em `controles.ini` (`[Opcoes]`).
 
 ### Remapear controles
 
