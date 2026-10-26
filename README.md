@@ -78,8 +78,8 @@ toque o fecha. O save fica em `Pokemon - Black (BR).sav`, ao lado do `.exe`.
 
 O `.exe` acima ainda roda o jogo pelo núcleo do melonDS. Em paralelo, o código ARM9 do
 jogo está sendo traduzido para C, função por função. Ainda **não existe um runtime que rode o
-jogo** com esse código (faltam o hardware do DS, as threads do SDK e as interrupções). O que
-existe e é validado é a tradução em si.
+jogo só** com esse código (faltam o hardware do DS, as threads do SDK e as interrupções); o
+[modo híbrido](#modo-híbrido) já roda parte das funções recompiladas dentro do jogo de verdade.
 
 - `tools/recomp/armdecode.py`: decodificador ARMv5TE (ARM + Thumb numa só representação).
 - `tools/recomp/recomp.py`: descobre as funções (chamadas, tail calls, tabelas de `switch`,
@@ -112,6 +112,62 @@ Resultado atual: 32.174 funções (1,15 milhão de instruções, 75,9% dos bytes
 13.205 funções. Os ~99 mil casos pulados não podem ser comparados isoladamente, cada um com o
 motivo listado: acessos a hardware (IO/VRAM), páginas que o próprio MPU do jogo proíbe (entradas
 inválidas), chamadas para overlays que não estão carregados, escrita por cima de código, SWI/CP15.
+
+### Modo híbrido
+
+O melonDS continua emulando o console inteiro (ARM7, GPU, som, DMA, timers, interrupções) e o
+interpretador do ARM9, mas quando o ARM9 chega à entrada de uma função da lista branca, roda a
+versão recompilada em C até o retorno dela. É o caminho incremental para um runtime próprio.
+
+Compilar (opcional; o build normal e o `build.bat` não mudam):
+
+```
+cmake -S . -B build -G Ninja -DENABLE_RECOMP=ON -DENABLE_HYBRID=ON
+cmake --build build --target game_hybrid
+"dist\Pokemon - Black (BR) (hybrid).exe" --hybrid
+```
+
+Gera um `.exe` separado, `Pokemon - Black (BR) (hybrid).exe`. Sem `--hybrid` ele roda como o
+normal; com `--hybrid` o JIT é desligado (as chamadas recompiladas entram pelo interpretador) e
+o contador aparece no canto da tela e no título da janela. O relatório completo (motivos de
+cada rollback, funções mais chamadas) é gravado a cada 10 s e ao sair em
+`Pokemon - Black (BR) - hybrid.log`, ao lado do `.exe`. `--hybrid-all` tenta todas as funções do
+módulo estático em vez de só as da lista branca.
+
+Como funciona:
+
+- **Lista branca** (`tools/recomp/hybrid_whitelist_IRBO.txt`): as funções do módulo estático que
+  passaram em todos os casos do teste diferencial, gerada com
+  `build\recomp_difftest.exe "Pokemon - Black (BR).nds" --passlist <arquivo>`. Overlays ainda
+  ficam de fora: o runtime não sabe com certeza quais estão carregados por inteiro.
+- **Ganchos no núcleo**: `tools/recomp/patch_core_hybrid.py` gera, no diretório de build, uma
+  cópia do `ARM.cpp` do melonDS com dois ganchos (o submódulo não é alterado): `ARMv5::JumpTo`
+  avisa quando um desvio cai na entrada de uma função da lista, e o laço do interpretador roda a
+  versão recompilada na fronteira da instrução seguinte, com o estado já completo.
+- **Transações** (`src/recomp/hybrid.cpp`): cada chamada recompilada registra as escritas na
+  memória. Se a função tentar algo que não dá para fazer de forma atômica (ler/escrever IO,
+  SWI, troca de modo, chamada indireta para overlay, retornar para outro endereço que não o LR,
+  rodar mais que 20 mil blocos), todas as escritas são desfeitas e o interpretador executa a
+  função normalmente. Funções que quase sempre desistem são desligadas. VRAM, paleta, OAM e
+  WRAM compartilhada passam pelo barramento do melonDS; RAM principal e TCM são acessadas direto,
+  respeitando o MPU do jogo.
+- **Tempo**: cada bloco recompilado conta ~10 ciclos do ARM9 para o agendador do melonDS seguir
+  andando; interrupções esperam o fim da chamada (curta, pelo limite de blocos).
+
+Teste sem janela (`recomp_hybridtest`, mesmo build): inicializa o jogo, aperta START na abertura
+e no título e depois A para avançar os textos, salva capturas das duas telas e imprime os
+contadores:
+
+```
+cmake --build build --target recomp_hybridtest
+build\recomp_hybridtest.exe "Pokemon - Black (BR).nds" --hybrid --frames 15000 --shots capturas --shot-every 1000
+```
+
+Resultado atual (15.000 frames, ~4 min de jogo): abertura, título, menu principal, introdução da
+professora e o quarto do jogador (primeira cena jogável), com **29,6 milhões de chamadas rodando
+como código recompilado** (99,8% das que chegaram a uma função da lista), 1.197 funções
+diferentes usadas das 3.895 da lista e 47 mil rollbacks (quase todos acesso a IO ou chamada
+indireta para overlay). Sem janela roda a ~184 fps, contra ~345 fps do build normal com JIT.
 
 ## Licença e distribuição
 

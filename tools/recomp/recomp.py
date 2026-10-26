@@ -596,7 +596,7 @@ class Emitter:
             w(f"rt_exception_return(c, 0x{ins.addr:08X}u); return;")
             self.stats["exception_returns"] += 1
         elif is_return(ins):
-            w("return;")
+            w("RECOMP_RETURN_CHECK(c, res, entry_lr); return;")
         elif ins.addr in fn.jump_tables:
             self.emit_table_jump(ins, w, fn, "(res & ~1u)" if ins.thumb else "res")
         else:
@@ -775,7 +775,7 @@ class Emitter:
             elif ins.addr in fn.pop_returns:
                 w(f"RECOMP_RETURN_CHECK(c, c->r[{ins.rm}], entry_lr); return;")
             elif ins.rm == LR:
-                w("return;")
+                w("RECOMP_RETURN_CHECK(c, c->r[14], entry_lr); return;")
             else:
                 w(f"rt_jump(c, c->r[{ins.rm}], 0x{ins.addr:08X}u); return;")
                 self.stats["dispatch_jumps"] += 1

@@ -34,6 +34,9 @@
 #include "Input.h"
 #include "TextRenderer.h"
 #include "rom_info.h"
+#ifdef HYBRID_RECOMP
+#include "hybrid.h"
+#endif
 
 #ifndef GAME_DISPLAY_NAME
 #define GAME_DISPLAY_NAME "Pokemon - Black (BR)"
@@ -56,6 +59,7 @@ constexpr int kStickDeadzone = 8000;
 constexpr float kCursorSpeed = 260.0f;  // DS pixels per second at full deflection
 constexpr Uint64 kSaveFlushDelayMs = 1500;
 constexpr Uint64 kHintDurationMs = 7000;
+constexpr Uint64 kHybridReportMs = 10000;
 
 FILE* gLogFile = nullptr;
 
@@ -185,6 +189,11 @@ struct App::Impl
     bool saveDirty = false;
     Uint64 saveLastWrite = 0;
 
+    // --hybrid: whitelisted ARM9 functions run as statically recompiled code.
+    bool hybrid = false, hybridAll = false;
+    Uint64 hybridNextTitle = 0, hybridNextReport = 0;
+    std::string hybridStatus;
+
     static void AudioCallback(void* user, Uint8* stream, int len)
     {
         auto* self = (Impl*)user;
@@ -289,6 +298,7 @@ struct App::Impl
         args.Firmware = std::move(firmware);
         args.OutputSampleRate = kAudioRate;
         args.Interpolation = AudioInterpolation::Cubic;
+        if (hybrid) args.JIT = std::nullopt; // recompiled calls hook into the interpreter
         nds = std::make_unique<NDS>(std::move(args), owner);
 
         static_cast<SoftRenderer&>(nds->GPU.GetRenderer3D()).SetThreaded(true, nds->GPU);
@@ -320,8 +330,50 @@ struct App::Impl
                              local.tm_hour, local.tm_min, local.tm_sec);
 
         nds->Start();
+#ifdef HYBRID_RECOMP
+        if (hybrid) Hybrid::Enable(*nds, hybridAll);
+#endif
         return true;
     }
+
+#ifdef HYBRID_RECOMP
+    std::string HybridStatus() const
+    {
+        const Hybrid::Stats& s = Hybrid::GetStats();
+        char buf[160];
+        snprintf(buf, sizeof(buf), "hibrido: %llu chamadas recompiladas (%.1f%%), %u funcoes",
+                 (unsigned long long)s.committed, s.calls ? 100.0 * s.committed / s.calls : 0.0, s.used);
+        return buf;
+    }
+
+    void WriteHybridReport()
+    {
+        std::wstring path = Widen(App::ExeDirectory() + GAME_DISPLAY_NAME " - hybrid.log");
+        if (FILE* f = _wfopen(path.c_str(), L"w"))
+        {
+            fputs(Hybrid::Report(60).c_str(), f);
+            fclose(f);
+        }
+    }
+
+    // Counters in the window title (once a second) and the log file (every 10 s).
+    void UpdateHybridStatus()
+    {
+        Uint64 now = SDL_GetTicks64();
+        if (now >= hybridNextTitle)
+        {
+            hybridNextTitle = now + 1000;
+            hybridStatus = HybridStatus();
+            SDL_SetWindowTitle(window, (std::string(GAME_DISPLAY_NAME " - ") + hybridStatus).c_str());
+            text->Clear(); // the renderer caches a texture per distinct string
+        }
+        if (now >= hybridNextReport)
+        {
+            hybridNextReport = now + kHybridReportMs;
+            WriteHybridReport();
+        }
+    }
+#endif
 
     void SetWindowIcon()
     {
@@ -741,6 +793,21 @@ struct App::Impl
             }
         }
 
+#ifdef HYBRID_RECOMP
+        if (hybrid && !hybridStatus.empty())
+        {
+            // Same counters as the title bar, visible in fullscreen too.
+            int w, h;
+            SDL_GetRendererOutputSize(renderer, &w, &h);
+            int th = std::max(12, h / 60);
+            SDL_Rect box{th / 2, th / 2, text->Measure(hybridStatus, th) + th, th + th / 2};
+            SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+            SDL_SetRenderDrawColor(renderer, 0, 0, 0, 150);
+            SDL_RenderFillRect(renderer, &box);
+            text->Draw(hybridStatus, box.x + th / 2, box.y + th / 4 - th / 8, th, SDL_Color{150, 230, 160, 255});
+        }
+#endif
+
         if (menu->IsOpen())
         {
             menu->Render(renderer, *text);
@@ -765,7 +832,13 @@ struct App::Impl
     {
         bool windowed = false;
         for (int i = 1; i < argc; i++)
+        {
             if (!strcmp(argv[i], "--windowed") || !strcmp(argv[i], "-w")) windowed = true;
+#ifdef HYBRID_RECOMP
+            else if (!strcmp(argv[i], "--hybrid")) hybrid = true;
+            else if (!strcmp(argv[i], "--hybrid-all")) hybrid = hybridAll = true;
+#endif
+        }
 
         SDL_SetHint(SDL_HINT_WINDOWS_DPI_AWARENESS, "permonitorv2");
         SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "0");
@@ -855,6 +928,9 @@ struct App::Impl
             nds->RunFrame();
             if (!running) break;
             Render();
+#ifdef HYBRID_RECOMP
+            if (hybrid) UpdateHybridStatus();
+#endif
 
             if (saveDirty && SDL_GetTicks64() - saveLastWrite > kSaveFlushDelayMs)
                 FlushSave();
@@ -883,6 +959,9 @@ struct App::Impl
         audioReady = false;
         if (audioDev) SDL_CloseAudioDevice(audioDev);
         FlushSave();
+#ifdef HYBRID_RECOMP
+        if (hybrid) WriteHybridReport();
+#endif
         if (menu->IsOpen()) menu->Close(); // keeps edits made right before quitting
         if (nds) nds->Stop();
         nds.reset();

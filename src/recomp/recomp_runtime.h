@@ -92,9 +92,10 @@ static inline u32 recomp_fnv1a(const u8* p, u32 len)
 #define RECOMP_BLOCK_HOOK(c) ((void)0)
 #endif
 
-// A function that returns through a value popped off the stack is assumed to
-// return to its caller. That only holds if the saved LR wasn't overwritten, so
-// test/debug builds can verify it (popped and entry LR both include the Thumb bit).
+// A function that returns (through a value popped off the stack, or BX LR /
+// MOV PC, LR) is assumed to return to its caller. That only holds if the LR it
+// was entered with is what it returns through, so test/debug builds and the
+// hybrid runtime verify it (popped and entry LR both include the Thumb bit).
 #ifdef RECOMP_CHECK_RETURNS
 #define RECOMP_RETURN_CHECK(c, popped, entry_lr) rt_return_check(c, popped, entry_lr)
 #else
